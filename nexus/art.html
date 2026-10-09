@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  The Nexus header (1300x372) and thumbnail (1920x1080): the inventory page, blurred and darkened, with the title at the
+  left and the loadouts drawer (from a screenshot) at the right. Same lettering as the Waypoints mod's art.
+  Query: ?kind=header|thumbnail. Rendered by render-art.ps1.
+-->
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&display=block" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #071820; overflow: hidden; }
+  #art { position: relative; overflow: hidden; }
+  .bg { position: absolute; inset: -40px; background: url(screenshots/source/page.webp) center / cover no-repeat;
+        filter: blur(10px) brightness(0.5) saturate(1.15); }
+  .shade { position: absolute; inset: 0;
+           background: linear-gradient(90deg, rgba(4,14,20,0.92) 0%, rgba(4,14,20,0.75) 45%, rgba(4,14,20,0.15) 75%, rgba(4,14,20,0.35) 100%); }
+  .vignette { position: absolute; inset: 0; box-shadow: inset 0 0 160px rgba(0,0,0,0.7); }
+  .text { position: absolute; display: flex; flex-direction: column; justify-content: center; }
+  .kicker { font-family: 'Pixelify Sans', monospace; font-weight: 500; letter-spacing: 3px; color: #8fd8ff; text-transform: uppercase;
+            text-shadow: 2px 2px 0 #031018; }
+  h1 { font-family: 'Pixelify Sans', monospace; font-weight: 700; line-height: 1; margin: 0; color: #ffffff; letter-spacing: 4px;
+       text-shadow: 0 6px 0 #1f6f93, 6px 6px 0 #082431, 0 0 30px rgba(0,0,0,0.6); }
+  .tag { font-family: 'Pixelify Sans', monospace; font-weight: 500; color: #e6f6ff; text-shadow: 2px 2px 0 #031018, 0 0 14px rgba(0,0,0,0.6); }
+  .tag b { color: #ff8a3d; font-weight: 700; }
+  /* The drawer, cut from a screenshot: its window onto the source image. */
+  .drawer { position: absolute; overflow: hidden; border-radius: 6px;
+            box-shadow: 0 0 0 3px rgba(143,216,255,0.35), 0 18px 50px rgba(0,0,0,0.75); }
+  .drawer img { position: absolute; }
+  .glow { position: absolute; border-radius: 50%; background: radial-gradient(circle, rgba(255,120,40,0.28), rgba(255,120,40,0) 70%); }
+</style>
+</head>
+<body>
+<div id="art">
+  <div class="bg"></div>
+  <div class="shade"></div>
+  <div class="glow" id="glow"></div>
+  <div class="drawer" id="drawer"><img src="screenshots/source/drawer.webp" id="shot"></div>
+  <div class="vignette"></div>
+  <div class="text" id="text">
+    <div class="kicker">A Minecraft Dungeons II mod</div>
+    <h1>LOADOUTS</h1>
+    <div class="tag">Save your gear. Swap it in <b>one press</b>.</div>
+  </div>
+</div>
+<script>
+const thumbnail = new URLSearchParams(location.search).get('kind') === 'thumbnail';
+const W = thumbnail ? 1920 : 1300, H = thumbnail ? 1080 : 372;
+const art = document.getElementById('art');
+art.style.width = W + 'px';
+art.style.height = H + 'px';
+
+// The drawer's part of the screenshot (2000x1056): its ribbon, the loadouts and their gear.
+const cut = thumbnail ? { x: 1352, y: 268, w: 586, h: 700 } : { x: 1352, y: 268, w: 586, h: 528 };
+const scale = thumbnail ? 1.2 : 0.62;
+const dw = cut.w * scale, dh = cut.h * scale;
+const left = thumbnail ? W - dw - 90 : W - dw - 70;
+const y0 = (H - dh) / 2;
+const drawer = document.getElementById('drawer');
+Object.assign(drawer.style, { left: left + 'px', top: y0 + "px", width: dw + 'px', height: dh + 'px' });
+const shot = document.getElementById('shot');
+Object.assign(shot.style, { width: 2000 * scale + 'px', height: 1056 * scale + 'px', left: -cut.x * scale + 'px', top: -cut.y * scale + 'px' });
+const glow = document.getElementById('glow');
+const gr = dh * 0.9;
+Object.assign(glow.style, { left: left + dw / 2 - gr + 'px', top: y0 + dh / 2 - gr + 'px', width: gr * 2 + 'px', height: gr * 2 + 'px' });
+
+const text = document.getElementById('text');
+const k = thumbnail ? 2.2 : 1;
+Object.assign(text.style, { left: (thumbnail ? 120 : 64) + 'px', top: '0px', height: H + 'px', width: left - (thumbnail ? 160 : 90) + 'px' });
+document.querySelector('.kicker').style.fontSize = 21 * k + 'px';
+document.querySelector('h1').style.fontSize = (thumbnail ? 160 : 100) + 'px';
+document.querySelector('.tag').style.fontSize = (thumbnail ? 58 : 29) + 'px';
+document.querySelector('.tag').style.marginTop = 16 * k + 'px';
+// Two lines on the thumbnail, broken where the sentences are.
+if (thumbnail) document.querySelector('.tag').innerHTML = 'Save your gear.<br>Swap it in <b>one press</b>.';
+document.querySelector('.kicker').style.marginBottom = 4 * k + 'px';
+</script>
+</body>
+</html>

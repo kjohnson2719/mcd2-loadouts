@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  Touches up a screenshot for the Nexus page at 1920x1080: fitted to the width (the thin bands above and below are the
+  same shot, blurred), a little more contrast and colour, a gentle sharpen, and for the annotated versions, callouts.
+  The close-up is the drawer enlarged. Rendered by render-shots.ps1.
+  Query: ?shot=page|drawer|closeup&notes=1
+-->
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&display=block" rel="stylesheet">
+<style>
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  #frame { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+  .back { position: absolute; inset: -40px; background-position: center; background-size: cover; filter: blur(14px) brightness(0.55); }
+  .shot { position: absolute; filter: url(#sharpen) contrast(1.05) saturate(1.1) brightness(1.02); }
+  .window { position: absolute; overflow: hidden; }
+  .callout { position: absolute; font-family: 'Pixelify Sans', monospace; font-weight: 700; font-size: 30px; color: #ffffff;
+             background: rgba(4, 16, 22, 0.9); border: 3px solid #8fd8ff; border-radius: 10px; padding: 10px 18px; white-space: nowrap;
+             box-shadow: 0 6px 18px rgba(0,0,0,0.55); }
+  .callout small { display: block; font-weight: 500; font-size: 22px; color: #b9e6ff; margin-top: 2px; }
+  .ring { position: absolute; border: 4px solid #8fd8ff; border-radius: 12px; box-shadow: 0 0 0 3px rgba(4,16,22,0.7), 0 0 24px rgba(143,216,255,0.55); }
+  .closeup { position: absolute; overflow: hidden; border-radius: 8px; box-shadow: 0 0 0 3px rgba(143,216,255,0.35), 0 20px 60px rgba(0,0,0,0.8); }
+  svg.lines { position: absolute; inset: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <filter id="sharpen"><feConvolveMatrix order="3" kernelMatrix="0 -0.3 0 -0.3 2.2 -0.3 0 -0.3 0" preserveAlpha="true"/></filter>
+</svg>
+<div id="frame"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const kind = params.get('shot') || 'page';
+const notes = params.get('notes') === '1';
+const sources = { page: { src: 'source/page.webp', w: 2000, h: 1058 }, drawer: { src: 'source/drawer.webp', w: 2000, h: 1056 } };
+const source = kind === 'page' ? sources.page : sources.drawer;
+const frame = document.getElementById('frame');
+
+const back = document.createElement('div');
+back.className = 'back';
+back.style.backgroundImage = `url(${source.src})`;
+frame.appendChild(back);
+
+function addImage(parent, s, left, top) {
+  const img = document.createElement('img');
+  img.src = source.src;
+  img.className = 'shot';
+  Object.assign(img.style, { width: source.w * s + 'px', height: source.h * s + 'px', left: left + 'px', top: top + 'px' });
+  parent.appendChild(img);
+  return img;
+}
+
+// The whole shot, as wide as the frame, centred.
+const scale = 1920 / source.w;
+const offsetY = (1080 - source.h * scale) / 2;
+const at = (x, y) => [x * scale, y * scale + offsetY];
+
+if (kind === 'closeup') {
+  // The drawer (source 1340,255 to 1950,975), enlarged in the middle, over the blurred page.
+  const cut = { x: 1340, y: 255, w: 610, h: 720 }, zoom = 1.4;
+  const box = document.createElement('div');
+  box.className = 'closeup';
+  const w = cut.w * zoom, h = cut.h * zoom;
+  Object.assign(box.style, { left: (1920 - w) / 2 + 'px', top: (1080 - h) / 2 + 'px', width: w + 'px', height: h + 'px' });
+  frame.appendChild(box);
+  addImage(box, zoom, -cut.x * zoom, -cut.y * zoom);
+} else {
+  addImage(frame, scale, 0, offsetY);
+}
+
+function el(cls, style, html) {
+  const d = document.createElement('div');
+  d.className = cls;
+  Object.assign(d.style, style);
+  if (html) d.innerHTML = html;
+  frame.appendChild(d);
+  return d;
+}
+function ring(x0, y0, x1, y1, pad) {
+  const [a, b] = at(x0, y0), [c, d] = at(x1, y1);
+  return el('ring', { left: a - pad + 'px', top: b - pad + 'px', width: c - a + 2 * pad + 'px', height: d - b + 2 * pad + 'px' });
+}
+function line(x0, y0, x1, y1) {
+  const svg = document.querySelector('svg.lines') || (() => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('class', 'lines'); s.setAttribute('width', 1920); s.setAttribute('height', 1080);
+    frame.appendChild(s); return s;
+  })();
+  for (const [w, c] of [[8, 'rgba(4,16,22,0.8)'], [4, '#8fd8ff']]) {
+    const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    l.setAttribute('x1', x0); l.setAttribute('y1', y0); l.setAttribute('x2', x1); l.setAttribute('y2', y1);
+    l.setAttribute('stroke', c); l.setAttribute('stroke-width', w); l.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(l);
+  }
+}
+
+if (notes && kind === 'page') {
+  // The Loadouts button beside Effects & Stats.
+  ring(1772, 172, 1930, 230, 8);
+  el('callout', { left: '1150px', top: '330px' }, 'Loadouts button<small>right stick click or L, on this page</small>');
+  line(1660, 330, 1780, 240);
+}
+if (notes && kind === 'drawer') {
+  // The drawer's parts, explained from the left.
+  el('callout', { left: '80px', top: '330px' }, 'Your loadouts<small>and what switching to one changes</small>');
+  line(560, 375, 1330, 430);
+  el('callout', { left: '80px', top: '600px' }, 'Their gear, as in your inventory<small>enchanted gear is marked</small>');
+  line(612, 645, 1330, 700);
+  el('callout', { left: '80px', top: '780px' }, 'Enchantments move with it<small>points come back, then go back on as saved</small>');
+  line(712, 825, 1330, 862);
+  el('callout', { left: '80px', top: '950px' }, 'Equip, save, rename, clear<small>A, X, Y and View on a controller</small>');
+  line(560, 995, 1330, 935);
+}
+</script>
+</body>
+</html>

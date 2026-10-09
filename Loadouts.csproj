@@ -1,0 +1,25 @@
+<Project Sdk="NeoRune.Sdk/1.0.0">
+  <!--
+    dotnet build   compiles the mod and installs it into the game's Paks\~mods\Loadouts folder.
+    Close the game before building: it locks the mod files while running.
+  -->
+  <PropertyGroup>
+    <!-- The game on this machine (Steam). Builds don't need it, only installing does. -->
+    <NeoRuneGameDir>C:\Program Files (x86)\Steam\steamapps\common\Minecraft Dungeons II</NeoRuneGameDir>
+    <!-- On the build server (GitHub Actions sets CI=true) there's no game to install into. -->
+    <NeoRuneInstall Condition="'$(CI)' == 'true'">false</NeoRuneInstall>
+    <!-- Shown in the Mods tab of the game's settings (Blueprint Loader 2.0). \n in the description is a line break. -->
+    <NeoRuneModTitle>Loadouts</NeoRuneModTitle>
+    <!-- Releases take their version from the tag (v1.2 -> 1.2): see .github/workflows/build.yml. -->
+    <Version>1.0</Version>
+    <NeoRuneModAuthor>Kyle</NeoRuneModAuthor>
+    <NeoRuneModDescription>Save the gear you have on as a loadout, and switch between loadouts in one press, enchantments included: the gear you take off is disenchanted (its enchantment points come back) and the gear you put on is enchanted again as it was saved.\nOn the inventory page, the Loadouts button beside Effects &amp; Stats (or right stick click, or L) opens them: equip, save, rename and clear loadouts there.\nA key for "next loadout" can be set below, to switch anywhere.</NeoRuneModDescription>
+  </PropertyGroup>
+  <!--
+    NeoRune compiles the sources itself, with its own symbols: development builds also get DEBUG (diagnostics on by
+    default, see ModActor), releases (neorune pack builds Release) don't. Added to its arguments after the SDK's.
+  -->
+  <Target Name="NeoRuneDebugSymbol" AfterTargets="_NeoRunePrepare" BeforeTargets="NeoRuneCompile" Condition="'$(Configuration)' == 'Debug' and '$(_NeoRuneRsp)' != ''">
+    <WriteLinesToFile File="$(_NeoRuneRsp)" Lines="--define=DEBUG" Overwrite="false" Condition="!$([System.IO.File]::ReadAllText('$(_NeoRuneRsp)').Contains('--define=DEBUG'))" />
+  </Target>
+</Project>
