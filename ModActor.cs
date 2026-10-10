@@ -78,6 +78,15 @@ public class ModActor : AActor, IModSettings
     KeyListener? nextListener;
     KeyListener? nextPadListener;
     MenuKeys? menuKeys;
+    // While the drawer is open, its keys (they're kept from the page under it), and the typing keys while a name's typed.
+    MenuKeys? drawerKeys;
+    MenuKeys? typeKeys;
+    // And the left stick, for moving through the loadouts (its directions don't come as keys).
+    MenuStick? drawerStick;
+    int stickLogs;
+    // Keeps the inventory's focus where it is while the drawer's open (the stick would move it under the drawer).
+    NavigationLock? pageLock;
+    string pageLockLogged = "";
     double lastAction = -100;
 
     // The inventory page: the inventory screens the game has made, the page shown, its Effects & Stats button, and the
@@ -164,7 +173,12 @@ public class ModActor : AActor, IModSettings
 
     protected override void ReceiveEndPlay(EEndPlayReason EndPlayReason)
     {
+        CloseDrawer();
         menuKeys?.SetOn(false);
+        drawerKeys?.SetOn(false);
+        typeKeys?.SetOn(false);
+        drawerStick?.SetOn(false);
+        pageLock?.Release();
         loadoutsButton?.Hide();
     }
 
@@ -174,7 +188,20 @@ public class ModActor : AActor, IModSettings
         double now = World.RealTime(this);
         bool drawerOpen = DrawerOpen();
         bool buttonShown = UpdatePage(now, drawerOpen);
+        // The drawer goes with the page: when the inventory closes or changes tab, or its effects panel opens.
+        if (drawerOpen && !PageShown())
+        {
+            CloseDrawer();
+            drawerOpen = false;
+        }
         menuKeys?.SetOn(buttonShown && !drawerOpen);
+        bool renaming = drawerOpen && drawer != null && drawer.IsRenaming();
+        // Each stays on until its keys are let go after it's done with: the page doesn't get the end of a press it didn't
+        // see the start of (B closing the drawer mustn't close the inventory as it's let go).
+        if (drawerKeys != null) drawerKeys.SetOn((drawerOpen && !renaming) || (drawerKeys.IsOn && drawerKeys.AnyDown()));
+        if (typeKeys != null) typeKeys.SetOn(renaming || (typeKeys.IsOn && typeKeys.AnyDown()));
+        drawerStick?.SetOn(drawerOpen && !renaming);
+        HoldPage(drawerOpen);
         if (drawerOpen && drawer != null) drawer.Refresh(now);
         if (switching >= 0 && now >= nextStepAt)
         {
@@ -248,10 +275,128 @@ public class ModActor : AActor, IModSettings
             if (menuKeys != null) menuKeys.Pressed += OnMenuKey;
             else if (Debug) Log.Write("keys: couldn't set up the game's key tracker, keys won't work in the inventory");
         }
-        if (menuKeys == null) return;
-        menuKeys.Clear();
-        menuKeys.Track(menuKey);
-        menuKeys.Track(menuPadKey);
+        if (menuKeys != null)
+        {
+            menuKeys.Clear();
+            menuKeys.Track(menuKey);
+            menuKeys.Track(menuPadKey);
+        }
+
+        if (drawerKeys == null)
+        {
+            drawerKeys = MenuKeys.Create(this);
+            if (drawerKeys != null) drawerKeys.Pressed += OnDrawerKey;
+        }
+        if (drawerKeys != null)
+        {
+            drawerKeys.Clear();
+            TrackDrawerKeys(drawerKeys);
+        }
+        if (drawerStick == null)
+        {
+            drawerStick = MenuStick.Create(this);
+            if (drawerStick != null) drawerStick.Stepped += OnDrawerStick;
+            else if (Debug) Log.Write("keys: couldn't set up the game's stick reader, the left stick won't move through the loadouts");
+        }
+        if (typeKeys == null)
+        {
+            typeKeys = MenuKeys.Create(this);
+            if (typeKeys != null)
+            {
+                // Held keys type again and again (Backspace most of all), like the game's text boxes.
+                typeKeys.Repeats = true;
+                if (Debug) typeKeys.LogReports = 40;
+                typeKeys.Pressed += OnTypeKey;
+                TrackTypingKeys(typeKeys);
+            }
+        }
+    }
+
+    /// <summary>The drawer's keys: moving, its actions, and closing (B, Esc, the pad's menu button, the loadouts key).</summary>
+    void TrackDrawerKeys(MenuKeys keys)
+    {
+        keys.Track(Key("Up"));
+        keys.Track(Key("Down"));
+        keys.Track(Key("Gamepad_DPad_Up"));
+        keys.Track(Key("Gamepad_DPad_Down"));
+        keys.Track(Key("Enter"));
+        keys.Track(Key("Gamepad_FaceButton_Bottom"));
+        keys.Track(Key("S"));
+        keys.Track(Key("Gamepad_FaceButton_Left"));
+        keys.Track(Key("R"));
+        keys.Track(Key("Gamepad_FaceButton_Top"));
+        keys.Track(Key("Delete"));
+        keys.Track(Key("Gamepad_Special_Left"));
+        keys.Track(Key("Escape"));
+        keys.Track(Key("Gamepad_FaceButton_Right"));
+        keys.Track(Key("Gamepad_Special_Right"));
+        keys.Track(menuKey);
+        keys.Track(menuPadKey);
+    }
+
+    /// <summary>The keys for typing a loadout's name: letters, digits, space, dash, Shift, Backspace, Enter and Esc (and A and B).</summary>
+    void TrackTypingKeys(MenuKeys keys)
+    {
+        keys.Track(Key("A")); keys.Track(Key("B")); keys.Track(Key("C")); keys.Track(Key("D")); keys.Track(Key("E"));
+        keys.Track(Key("F")); keys.Track(Key("G")); keys.Track(Key("H")); keys.Track(Key("I")); keys.Track(Key("J"));
+        keys.Track(Key("K")); keys.Track(Key("L")); keys.Track(Key("M")); keys.Track(Key("N")); keys.Track(Key("O"));
+        keys.Track(Key("P")); keys.Track(Key("Q")); keys.Track(Key("R")); keys.Track(Key("S")); keys.Track(Key("T"));
+        keys.Track(Key("U")); keys.Track(Key("V")); keys.Track(Key("W")); keys.Track(Key("X")); keys.Track(Key("Y"));
+        keys.Track(Key("Z"));
+        keys.Track(Key("Zero")); keys.Track(Key("One")); keys.Track(Key("Two")); keys.Track(Key("Three")); keys.Track(Key("Four"));
+        keys.Track(Key("Five")); keys.Track(Key("Six")); keys.Track(Key("Seven")); keys.Track(Key("Eight")); keys.Track(Key("Nine"));
+        keys.Track(Key("SpaceBar"));
+        keys.Track(Key("Hyphen"));
+        keys.Track(Key("BackSpace"));
+        keys.Track(Key("Enter"));
+        keys.Track(Key("Escape"));
+        keys.Track(Key("LeftShift"));
+        keys.Track(Key("RightShift"));
+        keys.Track(Key("Gamepad_FaceButton_Bottom"));
+        keys.Track(Key("Gamepad_FaceButton_Right"));
+    }
+
+    static FKey Key(string name) => new FKey { KeyName = name };
+
+    /// <summary>A key for the drawer (only while it's open: the tracker stays on a moment after, until its keys are let go).</summary>
+    void OnDrawerKey()
+    {
+        if (drawerKeys == null || drawer == null || !DrawerOpen() || drawer.IsRenaming()) return;
+        drawer.Key(drawerKeys.LastKey, false);
+    }
+
+    /// <summary>While the drawer's open, the inventory's focused item stays put (and is let go when it closes).</summary>
+    void HoldPage(bool drawerOpen)
+    {
+        if (pageLock == null) pageLock = NavigationLock.Create(this);
+        if (pageLock == null) return;
+        if (drawerOpen) pageLock.Hold();
+        else if (pageLock.Holding()) pageLock.Release();
+        if (!Debug) return;
+        string held = pageLock.Describe();
+        if (held == pageLockLogged) return;
+        pageLockLogged = held;
+        Log.Write("drawer holds the page's focus on: " + held);
+    }
+
+    /// <summary>The left stick pushed (or held) while the drawer's open: up and down move through the loadouts.</summary>
+    void OnDrawerStick()
+    {
+        if (drawerStick == null || drawer == null || !DrawerOpen() || drawer.IsRenaming()) return;
+        if (Debug && stickLogs < 4)
+        {
+            stickLogs++;
+            Log.Write($"stick: step {drawerStick.Step} at ({drawerStick.Last.X:0.00}, {drawerStick.Last.Y:0.00})");
+        }
+        drawer.Stick(drawerStick.Step);
+    }
+
+    /// <summary>A typing key, while a loadout's name is typed.</summary>
+    void OnTypeKey()
+    {
+        if (typeKeys == null || drawer == null || !DrawerOpen() || !drawer.IsRenaming()) return;
+        bool shift = typeKeys.IsDown(Key("LeftShift")) || typeKeys.IsDown(Key("RightShift"));
+        drawer.Key(typeKeys.LastKey, shift);
     }
 
     /// <summary>A listener for a key in the world; none for an unbound key ("None": NeoRune 1.0 can't write empty names).</summary>
@@ -335,8 +480,9 @@ public class ModActor : AActor, IModSettings
             var full = screen as UAS_PlayerInventory_Activatable;
             var inventoryPage = full != null ? full.PlayerInventory : null;
             if (Debug) LogPageState(screen, inventoryPage);
-            // Its being visible is what counts: found in game, it flips between activated and not while it shows.
-            if (inventoryPage != null && screen.IsVisible() && inventoryPage.IsVisible()) return inventoryPage;
+            // Its showing is what counts: found in game, it flips between activated and not while it shows. All the way up:
+            // the menu's tabs (map, collectibles...) are a switcher above the page, which hides it without changing it.
+            if (inventoryPage != null && screen.IsVisible() && inventoryPage.IsVisible() && Screens.Shown(inventoryPage, null)) return inventoryPage;
         }
         return null;
     }
@@ -551,23 +697,42 @@ public class ModActor : AActor, IModSettings
 
     void OnLoadoutsButton() => OpenDrawer();
 
-    bool DrawerOpen() => drawer != null && UKismetSystemLibrary.IsValid(drawer) && drawer.IsActivated();
+    bool DrawerOpen() => drawer != null && UKismetSystemLibrary.IsValid(drawer) && drawer.IsInViewport();
 
-    /// <summary>Opens the loadouts drawer over the inventory page (only from that page).</summary>
+    /// <summary>Whether the inventory page the drawer goes over is still on screen (with Effects &amp; Stats, not its panel).</summary>
+    bool PageShown() => page != null && statsButton != null && UKismetSystemLibrary.IsValid(statsButton)
+        && Screens.ShownTrace(statsButton, page) == "yes" && !EffectsPanelShown();
+
+    /// <summary>
+    /// Opens the loadouts drawer over the inventory page (only from that page). It's on the screen over the page (above
+    /// the Loadouts button), not one of the game's screens: see <see cref="LoadoutDrawer"/>.
+    /// </summary>
     void OpenDrawer()
     {
-        if (!started || DrawerOpen() || page == null || statsButton == null || !ActionAllowed()) return;
+        if (!started || DrawerOpen() || !PageShown() || !ActionAllowed()) return;
         CheckCharacter();
         MeasureDrawer();
         CollectStyle();
         if (Debug && !dumpedStyles) DumpStyles();
         Trail.Begin("open the loadouts drawer");
-        var screen = GameUI.Open(this, GameLayers.ContextMenu, Unreal.ClassOf<LoadoutDrawer>());
+        if (drawer == null || !UKismetSystemLibrary.IsValid(drawer)) drawer = Ui.Create(this, Unreal.ClassOf<LoadoutDrawer>()) as LoadoutDrawer;
+        if (drawer != null)
+        {
+            drawer.Begin(this, StartingLoadout());
+            drawer.AddToViewport(10001);
+        }
         Trail.End("open the loadouts drawer");
-        drawer = screen as LoadoutDrawer;
-        drawer?.Begin(this, StartingLoadout());
         loadoutsButton?.Hide();
         if (Debug) Log.Write($"loadouts drawer {(drawer != null ? "opened" : "didn't open")} at ({drawerTopLeft.X:0}, {drawerTopLeft.Y:0}) to ({drawerBottomRight.X:0}, {drawerBottomRight.Y:0}){(drawerRectKnown ? "" : " (not measured)")}, page scale {PageScale():0.000}; style: font {(fontObject != null ? "yes" : "no")}, entry box {(entryKnown ? "yes" : "no")}, {rarityNames.Count} rarity frames");
+    }
+
+    /// <summary>Takes the drawer off the screen (the Loadouts button comes back with the page).</summary>
+    public void CloseDrawer()
+    {
+        if (!DrawerOpen() || drawer == null) return;
+        drawer.RemoveFromParent();
+        Sounds.Hover(this);
+        if (Debug) Log.Write("loadouts drawer closed");
     }
 
     // ---------------------------------------------------------------- The game's look
@@ -1070,6 +1235,15 @@ public class ModActor : AActor, IModSettings
         if (!HasLoadout(index))
         {
             SetStatus($"{LoadoutName(index)} is empty: Save puts the gear you have on into it.");
+            Sounds.Forbidden(this);
+            return;
+        }
+        // In someone else's game, the gear is theirs to change (the game's equip and enchant calls don't come through):
+        // say so rather than start a swap that can't finish.
+        var host = World.Player(this);
+        if (host != null && !host.HasAuthority())
+        {
+            SetStatus("Loadouts can only swap gear in a game you host, not when you've joined someone else's. Saving and renaming still work.");
             Sounds.Forbidden(this);
             return;
         }

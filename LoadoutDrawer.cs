@@ -5,6 +5,7 @@ using UE.Angelscript;
 using UE.CommonUI;
 using UE.CoreUObject;
 using UE.Engine;
+using UE.InputCore;
 using UE.InventorySystem;
 using UE.SlateCore;
 using UE.UMG;
@@ -16,12 +17,15 @@ namespace Loadouts;
 /// header ribbon (the game's "Equipped" module, saying "Loadouts") over the game's tooltip panel (its frame, blur and
 /// button bar), laid out at the game's sizes with its fonts. Inside: the loadouts as the game's entry boxes, the selected
 /// one's gear in the game's rarity frames, its enchantments, and the actions in the panel's button bar. It covers the item
-/// panel and slides in over it. It's one of the game's screens (on its context menu layer), so the controller moves
-/// through the loadouts natively and B closes it.
+/// panel and slides in over it.
+/// It's on the screen over the page, not one of the game's screens: found in game (1.1), the inventory page keeps taking
+/// the game's back and focus while it shows, so a screen of ours over it got stuck. Its keys come from the mod's key
+/// tracker instead (<see cref="Key"/>), which keeps them from the page, and the mouse clicks it as usual.
 /// </summary>
-public class LoadoutDrawer : ModMenu
+public class LoadoutDrawer : ModWidget
 {
     public const int Max = 6;
+    const int MaxName = 24;
     const int IconCount = 12;
     const int IconsPerRow = 6;
     const float IconSize = 140;
@@ -51,8 +55,14 @@ public class LoadoutDrawer : ModMenu
     UVerticalBox? enchantList;
     UTextBlock? status;
     UBorder? renameBox;
-    UEditableText? renameText;
+    UBorder? renameSelection;
+    UTextBlock? renameText;
+    string typed;
+    // The old name, selected, until a key is typed: then it's replaced (Backspace clears it).
+    bool replacing;
+    double typedAt;
     List<UButton> actionButtons;
+    List<UTextBlock> actionTexts;
     List<UCommonActionWidget> actionIcons;
     List<UBorder> actionKeyCaps;
     List<UTextBlock> actionKeyNames;
@@ -71,7 +81,6 @@ public class LoadoutDrawer : ModMenu
     int confirmAction;
     int confirmIndex;
     double confirmAt;
-    bool focusedOnce;
     bool loggedTree;
 
     protected override UWidget? Build(UWidgetTree tree)
@@ -86,6 +95,7 @@ public class LoadoutDrawer : ModMenu
         iconSizeShown = -1;
         iconSlots = new List<USizeBox>();
         actionButtons = new List<UButton>();
+        actionTexts = new List<UTextBlock>();
         actionIcons = new List<UCommonActionWidget>();
         actionKeyCaps = new List<UBorder>();
         actionKeyNames = new List<UTextBlock>();
@@ -94,6 +104,7 @@ public class LoadoutDrawer : ModMenu
         textFaces = new List<string>();
         textSizes = new List<int>();
         renaming = -1;
+        typed = "";
         iconsShownFor = -1;
         iconsRevision = -1;
         openedAt = -1;
@@ -190,15 +201,17 @@ public class LoadoutDrawer : ModMenu
         AddHeader(tree, lower, "Enchantments");
         enchantList = Ui.Column(tree);
         if (enchantList != null) lower.AddChild(enchantList);
-        // Renaming: a text box, shown while a name is being typed.
-        renameText = UGameplayStatics.SpawnObject(Unreal.ClassOf<UEditableText>(), tree) as UEditableText;
+        // Renaming: the name being typed (the keys come through the mod's key tracker), shown while it's typed.
+        renameText = Label(tree, "", GameLook.TextFace, 45, Ui.Color(1, 1, 1, 1));
         if (renameText != null)
         {
-            renameText.SetHintText("Loadout name");
-            renameText.OnTextCommitted += OnNameCommitted;
-            renameBox = Ui.Panel(tree, renameText, Ui.Color(0.16f, 0.25f, 0.31f, 1), 24);
+            // The name in a box that's the selection's blue while the old name is selected.
+            renameSelection = Ui.Panel(tree, renameText, Ui.Color(0, 0, 0, 0), 0);
+            renameSelection?.SetPadding(new FMargin { Left = 4, Right = 4 });
+            renameBox = Ui.Panel(tree, renameSelection, Ui.Color(0.16f, 0.25f, 0.31f, 1), 24);
             if (renameBox != null)
             {
+                renameBox.SetHorizontalAlignment(EHorizontalAlignment.HAlign_Left);
                 renameBox.SetVisibility(ESlateVisibility.Collapsed);
                 var slot = lower.AddChild(renameBox) as UVerticalBoxSlot;
                 slot?.SetPadding(new FMargin { Top = 24 });
@@ -240,6 +253,8 @@ public class LoadoutDrawer : ModMenu
         state.SetJustification(UE.Slate.ETextJustify.Right);
         state.SetAutoWrapText(true);
         button.AddChild(line);
+        // Only the mouse clicks the rows: the keys come through the mod's key tracker, and focus stays with the page.
+        button.IsFocusable = false;
         var contentSlot = line.Slot as UButtonSlot;
         contentSlot?.SetHorizontalAlignment(EHorizontalAlignment.HAlign_Fill);
         contentSlot?.SetPadding(new FMargin { Left = 32, Right = 32, Top = 10, Bottom = 10 });
@@ -351,6 +366,7 @@ public class LoadoutDrawer : ModMenu
         var slot = actions.AddChild(button) as UHorizontalBoxSlot;
         slot?.SetPadding(new FMargin { Left = 32 });
         actionButtons.Add(button);
+        actionTexts.Add(text);
         actionIcons.Add(icon);
         actionKeyCaps.Add(keyCap);
         actionKeyNames.Add(keyName);
@@ -377,11 +393,22 @@ public class LoadoutDrawer : ModMenu
         return overlay;
     }
 
-    /// <summary>Shows the mod's loadouts, starting on one (the one worn, else the first).</summary>
+    /// <summary>
+    /// Shows the mod's loadouts, starting on one (the one worn, else the first). The drawer is made once and shown again
+    /// each time it opens, so each opening starts afresh.
+    /// </summary>
     public void Begin(ModActor owner, int start)
     {
         mod = owner;
         selected = start;
+        openedAt = -1;
+        lastFill = -100;
+        confirmAction = -1;
+        iconsShownFor = -1;
+        if (renaming >= 0) StopRenaming();
+        // Off screen until it's placed, so it doesn't show where it was last time for a frame.
+        var slot = drawer != null ? drawer.Slot as UCanvasPanelSlot : null;
+        slot?.SetPosition(Vec2(-10000, 0));
         Refresh(-1);
     }
 
@@ -399,7 +426,6 @@ public class LoadoutDrawer : ModMenu
             texts[i].SetShadowOffset(Vec2(0, 4));
             texts[i].SetShadowColorAndOpacity(Ui.Color(0, 0, 0, 0.5f));
         }
-        renameText?.SetFont(mod.GameFont(GameLook.TextFace, 45));
         if (mod.EntryBrush(out FSlateBrush entry))
         {
             for (int i = 0; i < rows.Count; i++) rows[i].SetStyle(RowStyle(entry));
@@ -429,41 +455,117 @@ public class LoadoutDrawer : ModMenu
         return tinted;
     }
 
-    /// <summary>The controller starts on the selected loadout.</summary>
-    protected override UWidget? BP_GetDesiredFocusTarget()
-    {
-        if (rows != null && selected >= 0 && selected < rows.Count) return rows[selected];
-        return this;
-    }
+    /// <summary>Whether a name is being typed (the mod then sends the typing keys, not the drawer's).</summary>
+    public bool IsRenaming() => renaming >= 0;
 
-    /// <summary>B: stops renaming, else closes the drawer.</summary>
-    protected override bool BP_OnHandleBackAction()
+    /// <summary>Closes the drawer (the mod takes it off the screen).</summary>
+    public void Close() => mod?.CloseDrawer();
+
+    /// <summary>
+    /// A key pressed while the drawer is open, from the mod's key tracker: up and down move through the loadouts, A or
+    /// Enter equips, X or S saves, Y or R renames, View or Delete clears, and B, Esc or the loadouts key closes it. While a
+    /// name is being typed, the typing keys (with Shift held or not).
+    /// </summary>
+    public void Key(FKey key, bool shift)
     {
+        if (mod == null) return;
+        string name = $"{key.KeyName}";
         if (renaming >= 0)
         {
-            StopRenaming();
-            return true;
+            Type(name, shift);
+            return;
         }
-        Close();
-        return true;
+        if (name == "Up" || name == "Gamepad_DPad_Up") Move(-1);
+        else if (name == "Down" || name == "Gamepad_DPad_Down") Move(1);
+        else if (name == "Enter" || name == "Gamepad_FaceButton_Bottom")
+        {
+            Sounds.Click(this);
+            DoAction(ActionEquip);
+        }
+        else if (name == "S" || name == "Gamepad_FaceButton_Left") DoAction(ActionSave);
+        else if (name == "R" || name == "Gamepad_FaceButton_Top") DoAction(ActionRename);
+        else if (name == "Delete" || name == "Gamepad_Special_Left") DoAction(ActionClear);
+        else if (name == "Escape" || name == "Gamepad_FaceButton_Right" || name == "Gamepad_Special_Right" || mod.IsMenuKey(key)) Close();
     }
 
-    /// <summary>The pad's and keyboard's other buttons: save, rename, clear (A and Enter press the row: equip).</summary>
-    public override FEventReply OnKeyDown(FGeometry MyGeometry, FKeyEvent InKeyEvent)
+    /// <summary>The left stick: up and down move through the loadouts (<see cref="MenuStick"/>'s steps).</summary>
+    public void Stick(int step)
     {
-        if (renaming >= 0) return UWidgetBlueprintLibrary.Unhandled();
-        var key = UKismetInputLibrary.GetKey(InKeyEvent);
-        string name = $"{key.KeyName}";
-        if (name == "Escape") Close();
-        else if (name == "Gamepad_FaceButton_Left" || name == "S") DoAction(ActionSave);
-        else if (name == "Gamepad_FaceButton_Top" || name == "R") DoAction(ActionRename);
-        else if (name == "Gamepad_Special_Left" || name == "Delete") DoAction(ActionClear);
-        else if (mod != null && mod.IsMenuKey(key)) Close();
-        else return UWidgetBlueprintLibrary.Unhandled();
-        return UWidgetBlueprintLibrary.Handled();
+        if (mod == null || renaming >= 0) return;
+        if (step == MenuStick.Up) Move(-1);
+        else if (step == MenuStick.Down) Move(1);
     }
 
-    /// <summary>Every frame while open: places and slides the drawer, follows the controller, fills it in now and then.</summary>
+    /// <summary>Selects the loadout above or below (it stops at the ends, like the game's lists).</summary>
+    void Move(int by)
+    {
+        if (mod == null) return;
+        int to = selected + by;
+        if (to < 0 || to >= mod.Count) return;
+        selected = to;
+        Sounds.Hover(this);
+        lastFill = -100;
+    }
+
+    /// <summary>
+    /// A key while a name is typed: a letter, digit, space or dash goes on it (replacing the old name, selected at first);
+    /// Backspace takes one off (or clears the old name); Enter keeps it, Esc doesn't.
+    /// </summary>
+    void Type(string name, bool shift)
+    {
+        typedAt = World.RealTime(this);
+        if (name == "Enter" || name == "Gamepad_FaceButton_Bottom")
+        {
+            FinishRenaming();
+            return;
+        }
+        if (name == "Escape" || name == "Gamepad_FaceButton_Right")
+        {
+            mod?.ShowStatus("");
+            StopRenaming();
+            return;
+        }
+        if (name == "BackSpace")
+        {
+            if (replacing) typed = "";
+            else if (UKismetStringLibrary.Len(typed) > 0) typed = UKismetStringLibrary.LeftChop(typed, 1);
+            replacing = false;
+            return;
+        }
+        string add = "";
+        // The letters' keys are named by their capital.
+        if (UKismetStringLibrary.Len(name) == 1) add = shift ? name : UKismetStringLibrary.ToLower(name);
+        else if (name == "SpaceBar") add = " ";
+        else if (name == "Hyphen") add = shift ? "_" : "-";
+        else add = Digit(name);
+        if (UKismetStringLibrary.Len(add) == 0) return;
+        if (replacing)
+        {
+            typed = "";
+            replacing = false;
+        }
+        if (UKismetStringLibrary.Len(typed) >= MaxName) return;
+        // No spaces to start with.
+        if (add == " " && UKismetStringLibrary.Len(typed) == 0) return;
+        typed += add;
+    }
+
+    static string Digit(string name)
+    {
+        if (name == "Zero") return "0";
+        if (name == "One") return "1";
+        if (name == "Two") return "2";
+        if (name == "Three") return "3";
+        if (name == "Four") return "4";
+        if (name == "Five") return "5";
+        if (name == "Six") return "6";
+        if (name == "Seven") return "7";
+        if (name == "Eight") return "8";
+        if (name == "Nine") return "9";
+        return "";
+    }
+
+    /// <summary>Every frame while open: places and slides the drawer, marks the selected loadout, fills it in now and then.</summary>
     public void Refresh(double now)
     {
         if (mod == null) return;
@@ -475,27 +577,20 @@ public class LoadoutDrawer : ModMenu
         int count = mod.Count;
         if (selected >= count) selected = count - 1;
         if (selected < 0) selected = 0;
-        if (!focusedOnce && now >= 0 && selected < rows.Count)
-        {
-            // Onto the starting loadout, once the screen has been set up.
-            focusedOnce = true;
-            rows[selected].SetKeyboardFocus();
-        }
-        // The controller moving through the rows selects them (the mouse selects with a click).
-        for (int i = 0; i < rows.Count && i < count; i++)
-            if (renaming < 0 && !mod.UsingMouse() && rows[i].HasKeyboardFocus() && i != selected)
-            {
-                selected = i;
-                lastFill = -100;
-            }
         for (int i = 0; i < rows.Count; i++)
         {
             bool shown = i < count;
             rows[i].SetVisibility(shown ? ESlateVisibility.Visible : ESlateVisibility.Collapsed);
             if (!shown) continue;
             // The selected one in the page's blue, as the game marks what's chosen.
-            bool lit = rows[i].HasKeyboardFocus() || rows[i].IsHovered();
-            rows[i].SetBackgroundColor(i == selected ? Ui.Color(0.35f, 0.75f, 1, lit ? 1 : 0.85f) : Ui.Color(1, 1, 1, 1));
+            rows[i].SetBackgroundColor(i == selected ? Ui.Color(0.35f, 0.75f, 1, rows[i].IsHovered() ? 1 : 0.85f) : Ui.Color(1, 1, 1, 1));
+        }
+        if (renaming >= 0 && now >= 0)
+        {
+            // The old name selected; once typing, the name so far with a caret (steady while typing, then blinking).
+            bool caret = !replacing && (int)((now - typedAt) * 2.5) % 2 == 0;
+            renameText?.SetText(caret ? typed + "|" : typed);
+            renameSelection?.SetBrushColor(replacing ? Ui.Color(0.2f, 0.45f, 0.85f, 0.75f) : Ui.Color(0, 0, 0, 0));
         }
         UpdateActionIcons();
         if (Debug() && !loggedTree && now >= 0 && now - openedAt > 0.5)
@@ -673,6 +768,10 @@ public class LoadoutDrawer : ModMenu
     {
         if (mod == null) return;
         bool gamepad = mod.Gamepad();
+        // While a name is typed, only Done (Enter or A).
+        if (actionTexts.Count > ActionEquip) actionTexts[ActionEquip].SetText(renaming >= 0 ? "Done" : "Equip");
+        for (int k = 0; k < actionButtons.Count; k++)
+            actionButtons[k].SetVisibility(renaming < 0 || k == ActionEquip ? ESlateVisibility.Visible : ESlateVisibility.Collapsed);
         for (int k = 0; k < actionIcons.Count; k++)
         {
             string key = ActionKey(k, gamepad);
@@ -758,32 +857,32 @@ public class LoadoutDrawer : ModMenu
         return again;
     }
 
+    /// <summary>Starts typing a new name for the selected loadout, from its name now (Backspace takes it off).</summary>
     void StartRenaming()
     {
-        if (mod == null || renameText == null || renameBox == null) return;
+        if (mod == null || renameBox == null) return;
         renaming = selected;
-        renameText.SetText(mod.LoadoutName(selected));
-        renameBox.SetVisibility(ESlateVisibility.Visible);
-        renameText.SetKeyboardFocus();
-        mod.ShowStatus("Type a name, then Enter (Esc keeps the old one).");
+        typed = mod.LoadoutName(selected);
+        replacing = true;
+        typedAt = World.RealTime(this);
+        renameBox.SetVisibility(ESlateVisibility.HitTestInvisible);
+        mod.ShowStatus(mod.Gamepad() ? "Type a new name on the keyboard. A keeps it, B keeps the old one." : "Type a new name, then Enter. Esc keeps the old one.");
+        Sounds.Click(this);
         lastFill = -100;
     }
 
-    void OnNameCommitted(FText Text, ETextCommit CommitMethod)
+    void FinishRenaming()
     {
         if (renaming < 0 || mod == null) return;
         int index = renaming;
-        if (CommitMethod == ETextCommit.OnCleared) mod.ShowStatus("");
-        else mod.RenameLoadout(index, UKismetTextLibrary.Conv_TextToString(Text));
         StopRenaming();
+        mod.RenameLoadout(index, typed);
     }
 
     void StopRenaming()
     {
-        int index = renaming;
         renaming = -1;
         renameBox?.SetVisibility(ESlateVisibility.Collapsed);
-        if (index >= 0 && index < rows.Count) rows[index].SetKeyboardFocus();
         lastFill = -100;
     }
 
@@ -794,26 +893,26 @@ public class LoadoutDrawer : ModMenu
     void Row4() => OnRow(4);
     void Row5() => OnRow(5);
 
-    /// <summary>
-    /// A row pressed: with the controller or keyboard (A, Enter), equips it. With the mouse, the first click selects it
-    /// and a second equips it.
-    /// </summary>
+    /// <summary>A row clicked: the first click selects it, a second equips it.</summary>
     void OnRow(int index)
     {
         if (mod == null || renaming >= 0) return;
-        if (mod.UsingMouse() && index != selected)
+        Sounds.Click(this);
+        if (index != selected)
         {
             selected = index;
-            Sounds.Click(this);
             lastFill = -100;
             return;
         }
-        selected = index;
-        Sounds.Click(this);
         DoAction(ActionEquip);
     }
 
-    void ClickEquip() => DoAction(ActionEquip);
+    void ClickEquip()
+    {
+        if (renaming >= 0) FinishRenaming();
+        else DoAction(ActionEquip);
+    }
+
     void ClickSave() => DoAction(ActionSave);
     void ClickRename() => DoAction(ActionRename);
     void ClickClear() => DoAction(ActionClear);

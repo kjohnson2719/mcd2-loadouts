@@ -11,7 +11,7 @@
     <!-- Shown in the Mods tab of the game's settings (Blueprint Loader 2.0). \n in the description is a line break. -->
     <NeoRuneModTitle>Loadouts</NeoRuneModTitle>
     <!-- Releases take their version from the tag (v1.2 -> 1.2): see .github/workflows/build.yml. -->
-    <Version>1.1</Version>
+    <Version>1.2</Version>
     <NeoRuneModAuthor>Kyle</NeoRuneModAuthor>
     <NeoRuneModDescription>Save the gear you have on as a loadout, and switch between loadouts in one press, enchantments included: the gear you take off is disenchanted (its enchantment points come back) and the gear you put on is enchanted again as it was saved.\nOn the inventory page, the Loadouts button beside Effects &amp; Stats (or right stick click, or L) opens them: equip, save, rename and clear loadouts there.\nA key for "next loadout" can be set below, to switch anywhere.</NeoRuneModDescription>
   </PropertyGroup>

@@ -14,6 +14,8 @@ inventory page. Enchantments move with your gear.
 - Each loadout shows what switching to it would change, its gear in the game's rarity frames, and its enchantments.
 - Rename loadouts, clear them, and save over them (it asks twice).
 - Loadouts are saved per character.
+- Swapping works in single player and in games you host. When you've joined someone else's game, the host's game decides
+  what you can equip and enchant, so the loadouts say so instead (saving and renaming still work).
 
 ## Controls
 
@@ -25,7 +27,7 @@ inventory page. Enchantments move with your gear.
 | Save the gear you have on (twice to replace) | X | S |
 | Rename | Y | R |
 | Clear (twice) | View | Delete |
-| Close | B | Esc |
+| Close | B (or right stick click) | Esc (or L) |
 
 A "next loadout" key (unbound by default) switches loadouts anywhere. The keys, the number of loadouts (2 to 6) and
 moving enchantments are in the game's Settings, Mods tab.

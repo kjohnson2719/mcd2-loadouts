@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2 (2026-10-09)
+
+- The loadouts no longer get stuck open. B and Esc (or the loadouts key) always close them, never the inventory; they
+  close when the inventory does or when you switch tabs (map, collectibles...), and only one can be open at a time.
+- The left stick moves through the loadouts, and the inventory under them stays where it was.
+- Renaming: the old name starts selected (type to replace it, Backspace clears it), held keys repeat, and quick presses
+  of the same key aren't lost.
+- When you've joined someone else's game, the loadouts say swapping only works in games you host, instead of starting a
+  swap that can't finish. Saving and renaming still work.
+- The Loadouts button no longer shows on the menu's other tabs.
+
 ## 1.1 (2026-10-09)
 
 - Tells you when a new version is out, in a notice made of the game's own panel (asks GitHub when the game starts, at most every 6 hours; a setting turns it off). With several of these mods installed, one notice lists them all.
