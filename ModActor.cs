@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using ModKit;
 using NeoRune;
 using UE.Angelscript;
 using UE.CommonGame;
@@ -23,13 +24,14 @@ namespace Loadouts;
 /// Loadouts: save the gear the character has on as a loadout, and switch between loadouts in one press. With enchantments
 /// moved too: the gear taken off is disenchanted (the game gives its enchantment points back) and the gear put on is
 /// enchanted again as it was saved. Loadouts are saved per character. They live on the inventory page: a Loadouts button
-/// above Effects &amp; Stats opens a drawer over the page's right-hand panel.
+/// beside Effects &amp; Stats opens a drawer over the page's item panel. Built on the mod kit (ModKit).
 /// </summary>
 [ModSetting.Heading("Loadouts")]
 [ModSetting.Keybind("menuKey", "Open the loadouts on the inventory page (its Loadouts button does too)", Default = "L", Secondary = "Gamepad_RightThumbstick")]
 [ModSetting.Keybind("nextKey", "Switch to the next saved loadout (anywhere)")]
 [ModSetting.Slider("count", "Number of loadouts", Default = 4, Min = 2, Max = 6, Step = 1)]
 [ModSetting.Toggle("moveEnchants", "Move enchantments with the gear (disenchants the gear you take off, enchants the gear you put on as it was saved)", Default = true)]
+[ModSetting.Toggle("updates", "Tell me when a new version is out (checks GitHub when the game starts)", Default = true)]
 [ModSetting.Heading("Troubleshooting")]
 // Diagnostics: on in development builds (dotnet build), off in releases (Release builds).
 #if DEBUG
@@ -45,12 +47,12 @@ public class ModActor : AActor, IModSettings
     const int StepEnchant = 2;
     const double StepSeconds = 0.15;   // between steps, so the game has applied one before the next looks
     const int StepTriesMax = 12;
-    const double KeyGap = 0.2;         // seconds without input before a tracked key counts as pressed again
     const double ButtonGap = 10;       // UI pixels between the Loadouts button and Effects & Stats
 
     // Settings, with the same defaults as above (Blueprint Loader only sends the ones the player changed).
     public int Count = 4;
     public bool MoveEnchants = true;
+    public bool CheckUpdates = true;
 #if DEBUG
     public bool Debug = true;
 #else
@@ -75,13 +77,8 @@ public class ModActor : AActor, IModSettings
     // the game's key tracker, switched on only while the page shows, as it keeps the keys it tracks from the game's menus.
     KeyListener? nextListener;
     KeyListener? nextPadListener;
-    UKeyboardDirectionTickWrapper? keyTracker;
-    List<FKey> trackedKeys = new();
-    bool trackerOn;
-    List<FKey> pressKeys = new();
-    List<double> pressTimes = new();
+    MenuKeys? menuKeys;
     double lastAction = -100;
-    int loggedKeyEvents;
 
     // The inventory page: the inventory screens the game has made, the page shown, its Effects & Stats button, and the
     // Loadouts button (a copy of it, on screen just above it). Then the drawer, and where it goes.
@@ -89,18 +86,16 @@ public class ModActor : AActor, IModSettings
     List<UCommonActivatableWidget> inventories = new();
     UAS_PlayerInventoryBase? page;
     UCommonButtonBase? statsButton;
-    LoadoutsButton? loadoutsButton;
+    StyledButton? loadoutsButton;
     bool loggedPage;
     bool loggedNoStatsButton;
     LoadoutDrawer? drawer;
     bool drawerRectKnown;
     FVector2D drawerTopLeft;
     FVector2D drawerBottomRight;
-    // The game's input action rows by the key they're on (pad and keyboard), for button icons.
-    Dictionary<string, FDataTableRowHandle> padRows = new();
-    Dictionary<string, FDataTableRowHandle> keyRows = new();
-    int rowSearches;
-    double lastRowSearch = -100;
+    // The game's button icons, by key.
+    ActionIcons? icons;
+    double lastIconSearch = -100;
 
     // The switch in progress (to loadout `switching`), as steps done one at a time.
     int switching = -1;
@@ -129,6 +124,13 @@ public class ModActor : AActor, IModSettings
         // Also while the game is paused, so switching works with a menu open if the game pauses for it.
         SetTickableWhenPaused(true);
         Timer.Start(this, nameof(TryStart), 0.5f, true);
+        // A moment in, once the settings have come (also on the main menu).
+        Timer.Start(this, nameof(StartUpdateCheck), 2f, false);
+    }
+
+    void StartUpdateCheck()
+    {
+        if (CheckUpdates) UpdateCheck.Start(this);
     }
 
     /// <summary>Waits for the player, their inventory and their character's id (there's none on the main menu).</summary>
@@ -162,9 +164,8 @@ public class ModActor : AActor, IModSettings
 
     protected override void ReceiveEndPlay(EEndPlayReason EndPlayReason)
     {
-        keyTracker?.SetIsEnabled(false);
-        trackerOn = false;
-        loadoutsButton?.RemoveFromParent();
+        menuKeys?.SetOn(false);
+        loadoutsButton?.Hide();
     }
 
     public override void ReceiveTick(float deltaSeconds)
@@ -173,12 +174,7 @@ public class ModActor : AActor, IModSettings
         double now = World.RealTime(this);
         bool drawerOpen = DrawerOpen();
         bool buttonShown = UpdatePage(now, drawerOpen);
-        bool track = buttonShown && !drawerOpen;
-        if (keyTracker != null && track != trackerOn)
-        {
-            trackerOn = track;
-            keyTracker.SetIsEnabled(track);
-        }
+        menuKeys?.SetOn(buttonShown && !drawerOpen);
         if (drawerOpen && drawer != null) drawer.Refresh(now);
         if (switching >= 0 && now >= nextStepAt)
         {
@@ -195,6 +191,7 @@ public class ModActor : AActor, IModSettings
         {
             case "count": Count = Clamp((int)(ModSettings.ToNumber(value) + 0.5), 2, LoadoutDrawer.Max); break;
             case "moveEnchants": MoveEnchants = ModSettings.ToBool(value); break;
+            case "updates": CheckUpdates = ModSettings.ToBool(value); break;
             case "debug": Debug = ModSettings.ToBool(value); break;
         }
     }
@@ -219,6 +216,7 @@ public class ModActor : AActor, IModSettings
     {
         Count = 4;
         MoveEnchants = true;
+        CheckUpdates = true;
 #if DEBUG
         Debug = true;
 #else
@@ -244,24 +242,16 @@ public class ModActor : AActor, IModSettings
         nextPadListener = Listen(nextPadKey);
         if (nextPadListener != null) nextPadListener.Pressed += OnNextKey;
 
-        if (keyTracker == null)
+        if (menuKeys == null)
         {
-            keyTracker = UKeyboardDirectionTickWrapper.Create();
-            var localPlayer = UCommonUIExtensions.GetLocalPlayerFromController(World.PlayerController(this));
-            if (keyTracker != null && localPlayer != null)
-            {
-                keyTracker.SetOwningPlayer(localPlayer);
-                keyTracker.OnInputPerformedThisTick = OnTrackedKey;
-                keyTracker.SetIsEnabled(false);
-                trackerOn = false;
-            }
+            menuKeys = MenuKeys.Create(this);
+            if (menuKeys != null) menuKeys.Pressed += OnMenuKey;
             else if (Debug) Log.Write("keys: couldn't set up the game's key tracker, keys won't work in the inventory");
         }
-        if (keyTracker == null) return;
-        foreach (var key in trackedKeys) keyTracker.UntrackKey(key);
-        trackedKeys = new List<FKey>();
-        Track(menuKey);
-        Track(menuPadKey);
+        if (menuKeys == null) return;
+        menuKeys.Clear();
+        menuKeys.Track(menuKey);
+        menuKeys.Track(menuPadKey);
     }
 
     /// <summary>A listener for a key in the world; none for an unbound key ("None": NeoRune 1.0 can't write empty names).</summary>
@@ -271,45 +261,13 @@ public class ModActor : AActor, IModSettings
         return Input.OnKey(this, key);
     }
 
-    void Track(FKey key)
-    {
-        if (keyTracker == null || key.KeyName == "None") return;
-        foreach (var tracked in trackedKeys)
-            if (UKismetInputLibrary.EqualEqual_KeyKey(tracked, key)) return;
-        keyTracker.TrackKey(key);
-        trackedKeys.Add(key);
-    }
-
-    /// <summary>The game's key tracker reports tracked keys while they're down: a key counts as pressed after a short gap.</summary>
-    void OnTrackedKey(float DeltaTime, FKey Key, EInputEvent InputEvent)
-    {
-        if (Debug && loggedKeyEvents < 8)
-        {
-            loggedKeyEvents++;
-            Log.Write($"keys: tracker reported {Key.KeyName} {InputEvent}");
-        }
-        if (InputEvent == EInputEvent.IE_Released || !trackerOn) return;
-        if (!NewPress(Key, World.RealTime(this))) return;
-        if (IsMenuKey(Key)) OpenDrawer();
-    }
-
-    static bool Is(FKey key, FKey bound) => bound.KeyName != "None" && UKismetInputLibrary.EqualEqual_KeyKey(key, bound);
-
     /// <summary>Whether a key is the one that opens (and closes) the loadouts.</summary>
-    public bool IsMenuKey(FKey key) => Is(key, menuKey) || Is(key, menuPadKey);
+    public bool IsMenuKey(FKey key) => MenuKeys.Is(key, menuKey) || MenuKeys.Is(key, menuPadKey);
 
-    bool NewPress(FKey key, double now)
+    /// <summary>A key on the inventory page (the tracker only hears the loadouts' keys).</summary>
+    void OnMenuKey()
     {
-        for (int i = 0; i < pressKeys.Count; i++)
-        {
-            if (!UKismetInputLibrary.EqualEqual_KeyKey(pressKeys[i], key)) continue;
-            bool pressed = now - pressTimes[i] > KeyGap;
-            pressTimes[i] = now;
-            return pressed;
-        }
-        pressKeys.Add(key);
-        pressTimes.Add(now);
-        return true;
+        if (menuKeys != null && IsMenuKey(menuKeys.LastKey)) OpenDrawer();
     }
 
     /// <summary>True (and starts the moment) unless an action just happened: one press can arrive through two routes.</summary>
@@ -327,97 +285,30 @@ public class ModActor : AActor, IModSettings
         NextLoadout();
     }
 
-    public bool Gamepad()
-    {
-        var input = InputSubsystem();
-        return input != null && input.GetCurrentInputType() == ECommonInputType.Gamepad;
-    }
+    public bool Gamepad() => Screens.Gamepad(this);
 
     /// <summary>Whether the player is on the mouse and keyboard (not a controller).</summary>
-    public bool UsingMouse()
-    {
-        var input = InputSubsystem();
-        return input == null || input.GetCurrentInputType() != ECommonInputType.Gamepad;
-    }
-
-    UCommonInputSubsystem? InputSubsystem()
-    {
-        var controller = World.PlayerController(this);
-        return controller == null ? null
-            : USubsystemBlueprintLibrary.GetLocalPlayerSubSystemFromPlayerController(controller, Unreal.ClassOf<UCommonInputSubsystem>()) as UCommonInputSubsystem;
-    }
+    public bool UsingMouse() => !Screens.Gamepad(this);
 
     /// <summary>The game's input action row on a key (on the pad or the keyboard), for its icon.</summary>
     public bool IconRow(string key, bool gamepad, out FDataTableRowHandle row)
     {
-        if (gamepad) return padRows.TryGetValue(key, out row);
-        return keyRows.TryGetValue(key, out row);
+        if (icons != null) return icons.Row(key, gamepad, out row);
+        row = new FDataTableRowHandle();
+        return false;
     }
 
-    /// <summary>
-    /// The rows of the game's input action tables, by the keys they're on (an action table row is what the game's hints
-    /// show icons for). The tables are the ones the action icons on screen use: a few tries, as more of its UI gets built.
-    /// </summary>
+    /// <summary>Looks for the game's button icons (their tables come with its menus: a few tries).</summary>
     void FindIconRows()
     {
-        rowSearches++;
-        var tables = new List<UDataTable>();
-        UWidgetBlueprintLibrary.GetAllWidgetsOfClass(this, out var roots, Unreal.ClassOf<UUserWidget>(), false);
-        var pending = new List<UWidget>();
-        int visited = 0;
-        foreach (var root in roots)
-        {
-            if (root == null || root.WidgetTree == null || root.WidgetTree.RootWidget == null) continue;
-            pending.Add(root.WidgetTree.RootWidget);
-            while (pending.Count > 0 && visited < 50000)
-            {
-                var widget = pending[pending.Count - 1];
-                pending.RemoveAt(pending.Count - 1);
-                visited++;
-                if (widget == null || widget is UUserWidget) continue;
-                var icon = widget as UCommonActionWidget;
-                if (icon != null)
-                {
-                    foreach (var row in icon.InputActions)
-                        if (row.DataTable != null && !tables.Contains(row.DataTable)) tables.Add(row.DataTable);
-                    continue;
-                }
-                var panel = widget as UPanelWidget;
-                if (panel != null) pending.AddRange(panel.GetAllChildren());
-            }
-            pending.Clear();
-        }
-        int rows = 0;
-        foreach (var table in tables)
-        {
-            UDataTableFunctionLibrary.GetDataTableRowNames(table, out var names);
-            foreach (var name in names)
-            {
-                if (!Unreal.DataTableRow(table, name, out FCommonInputActionDataBase row)) continue;
-                rows++;
-                var handle = new FDataTableRowHandle { DataTable = table, RowName = name };
-                string pad = $"{row.DefaultGamepadInputTypeInfo.Key.KeyName}";
-                string keyboard = $"{row.KeyboardInputTypeInfo.Key.KeyName}";
-                if (pad != "None" && !padRows.ContainsKey(pad)) padRows.Add(pad, handle);
-                if (keyboard != "None" && !keyRows.ContainsKey(keyboard)) keyRows.Add(keyboard, handle);
-            }
-        }
-        if (Debug)
-        {
-            string keys = "";
-            foreach (var pair in keyRows) keys += " " + pair.Key;
-            Log.Write($"icons: {tables.Count} action tables, {rows} actions; {padRows.Count} pad keys, keyboard keys:{keys}");
-        }
+        if (icons == null) icons = ActionIcons.Create(this);
+        if (icons == null) return;
+        icons.Find();
+        if (Debug) Log.Write($"icons: keyboard keys with icons:{icons.KeyboardKeys()}");
     }
 
     /// <summary>A key's short name, when there's no icon for it: "R3" for the right stick's click, "L"...</summary>
-    public static string KeyLabel(FKey key)
-    {
-        string name = $"{key.KeyName}";
-        if (name == "Gamepad_LeftThumbstick") return "L3";
-        if (name == "Gamepad_RightThumbstick") return "R3";
-        return $"{UKismetInputLibrary.Key_GetDisplayName(key, true)}";
-    }
+    public static string KeyLabel(FKey key) => ActionIcons.Label(key);
 
     // ---------------------------------------------------------------- The inventory page
 
@@ -458,7 +349,7 @@ public class ModActor : AActor, IModSettings
     {
         if (pageStates >= 6) return;
         string state = $"{UKismetSystemLibrary.GetObjectName(screen)}: visible {screen.IsVisible()}, page {GameUI.ClassPath(inventoryPage)}";
-        if (inventoryPage != null) state += $", page visible {inventoryPage.IsVisible()}, shown: {ShownTrace(inventoryPage, null)}";
+        if (inventoryPage != null) state += $", page visible {inventoryPage.IsVisible()}, shown: {Screens.ShownTrace(inventoryPage, null)}";
         if (state == pageState) return;
         pageState = state;
         pageStates++;
@@ -488,43 +379,14 @@ public class ModActor : AActor, IModSettings
             statsButton = null;
         }
         if (page != null && (statsButton == null || !UKismetSystemLibrary.IsValid(statsButton))) statsButton = FindStatsButton(page);
-        bool show = page != null && statsButton != null && ShownTrace(statsButton, page) == "yes" && !drawerOpen && !EffectsPanelShown();
-        if (show && rowSearches < 3 && now - lastRowSearch > 1 && !padRows.ContainsKey($"{menuPadKey.KeyName}"))
+        bool show = page != null && statsButton != null && Screens.ShownTrace(statsButton, page) == "yes" && !drawerOpen && !EffectsPanelShown();
+        bool iconsWanted = icons == null || (icons.Searches < 3 && !icons.Has($"{menuPadKey.KeyName}", true));
+        if (show && iconsWanted && now - lastIconSearch > 1)
         {
-            lastRowSearch = now;
+            lastIconSearch = now;
             FindIconRows();
         }
         return PlaceButton(show, now);
-    }
-
-    /// <summary>
-    /// Whether a widget shows, up to <paramref name="top"/> (null: all the way up): "yes", or the first widget that hides
-    /// it (one that's hidden, or a switcher showing another page; switchers don't change the others' visibility).
-    /// </summary>
-    static string ShownTrace(UWidget widget, UWidget? top)
-    {
-        UObject? at = widget;
-        for (int i = 0; i < 80 && at != null; i++)
-        {
-            if (top != null && at == top) return "yes";
-            var current = at as UWidget;
-            if (current != null)
-            {
-                if (!current.IsVisible()) return $"no: {UKismetSystemLibrary.GetObjectName(current)} ({GameUI.ClassPath(current)}) is hidden";
-                var parent = current.GetParent();
-                if (parent != null)
-                {
-                    var switcher = parent as UWidgetSwitcher;
-                    if (switcher != null && switcher.GetActiveWidget() != current)
-                        return $"no: switcher {UKismetSystemLibrary.GetObjectName(switcher)} shows {UKismetSystemLibrary.GetObjectName(switcher.GetActiveWidget())}, not {UKismetSystemLibrary.GetObjectName(current)}";
-                    at = parent;
-                    continue;
-                }
-            }
-            // The root of a user widget's tree: on to the user widget (the tree's outer).
-            at = UKismetSystemLibrary.GetOuterObject(at);
-        }
-        return "yes";
     }
 
     /// <summary>
@@ -541,7 +403,7 @@ public class ModActor : AActor, IModSettings
         foreach (var widget in all)
         {
             var button = widget as UCommonButtonBase;
-            if (button == null || ShownTrace(button, inventoryPage) != "yes") continue;
+            if (button == null || Screens.ShownTrace(button, inventoryPage) != "yes") continue;
             candidates++;
             if (switchRow != "None" && $"{button.TriggeringInputAction.RowName}" == switchRow)
             {
@@ -572,54 +434,47 @@ public class ModActor : AActor, IModSettings
     }
 
     /// <summary>
-    /// The Loadouts button (<see cref="LoadoutsButton"/>), on screen right of Effects &amp; Stats, as high, across to the
-    /// right edge of the item panel below. True while it shows.
+    /// The Loadouts button (the kit's <see cref="StyledButton"/>, made like Effects &amp; Stats), on screen right of Effects
+    /// &amp; Stats, as high, across to the right edge of the item panel below. True while it shows.
     /// </summary>
     bool PlaceButton(bool show, double now)
     {
         if (!show || statsButton == null)
         {
-            if (loadoutsButton != null && loadoutsButton.IsInViewport()) loadoutsButton.RemoveFromParent();
+            loadoutsButton?.Hide();
             return false;
         }
         if (loadoutsButton == null || !UKismetSystemLibrary.IsValid(loadoutsButton))
         {
-            loadoutsButton = Ui.Create(this, Unreal.ClassOf<LoadoutsButton>()) as LoadoutsButton;
-            loadoutsButton?.Begin(this);
+            loadoutsButton = Ui.Create(this, Unreal.ClassOf<StyledButton>()) as StyledButton;
+            if (loadoutsButton != null)
+            {
+                loadoutsButton.SetLabel("Loadouts");
+                loadoutsButton.Clicked += OnLoadoutsButton;
+            }
         }
         if (loadoutsButton == null) return false;
-        // Over the inventory (it's a menu).
-        if (!loadoutsButton.IsInViewport()) loadoutsButton.AddToViewport(10000);
         if (!StatsRect(out FVector2D statsTopLeft, out FVector2D statsBottomRight)) return true;
         double scale = PageScale();
-        double viewportScale = UWidgetLayoutLibrary.GetViewportScale(this);
-        if (!(scale > 0) || !(viewportScale > 0)) return true;
+        if (!(scale > 0)) return true;
         double gap = ButtonGap * scale;
-        double left = statsBottomRight.X + gap;
-        double right = ColumnRight(now, statsTopLeft, statsBottomRight);
-        if (!(right - left > (statsBottomRight.Y - statsTopLeft.Y) * 1.5))
+        double height = statsBottomRight.Y - statsTopLeft.Y;
+        var topLeft = Vec2(statsBottomRight.X + gap, statsTopLeft.Y);
+        var bottomRight = Vec2(ColumnRight(now, statsTopLeft, statsBottomRight), statsBottomRight.Y);
+        if (!(bottomRight.X - topLeft.X > height * 1.5))
         {
             // No room at its right: above it instead, as wide.
-            left = statsTopLeft.X;
-            right = statsBottomRight.X;
-            statsTopLeft = Vec2(statsTopLeft.X, statsTopLeft.Y - (statsBottomRight.Y - statsTopLeft.Y) - gap);
-            statsBottomRight = Vec2(statsBottomRight.X, statsTopLeft.Y + (statsBottomRight.Y - statsTopLeft.Y));
+            topLeft = Vec2(statsTopLeft.X, statsTopLeft.Y - height - gap);
+            bottomRight = Vec2(statsBottomRight.X, statsTopLeft.Y - gap);
         }
-        // In the page's units (its design sizes), scaled from those to the viewport's.
-        double width = (right - left) / scale;
-        double height = (statsBottomRight.Y - statsTopLeft.Y) / scale;
-        double toViewport = scale / viewportScale;
         bool gamepad = Gamepad();
         var key = gamepad && menuPadKey.KeyName != "None" ? menuPadKey : menuKey;
         bool hasRow = IconRow($"{key.KeyName}", gamepad, out FDataTableRowHandle row);
-        loadoutsButton.Refresh(statsButton, width, height, toViewport, row, hasRow);
-        USlateBlueprintLibrary.AbsoluteToViewport(this, Vec2(left, statsTopLeft.Y), out FVector2D pixel, out FVector2D at);
-        loadoutsButton.SetDesiredSizeInViewport(Vec2(width * toViewport, height * toViewport));
-        loadoutsButton.SetPositionInViewport(at, false);
+        loadoutsButton.Show(statsButton, topLeft, bottomRight, row, hasRow);
         if (Debug && !loggedButtonPlace)
         {
             loggedButtonPlace = true;
-            Log.Write($"loadouts button at ({at.X:0}, {at.Y:0}): {width:0}x{height:0} page units, page scale {scale:0.000}, viewport scale {viewportScale:0.000}");
+            Log.Write($"loadouts button at ({topLeft.X:0}, {topLeft.Y:0}) to ({bottomRight.X:0}, {bottomRight.Y:0}), page scale {scale:0.000}");
         }
         return true;
     }
@@ -633,31 +488,17 @@ public class ModActor : AActor, IModSettings
     /// <summary>The Effects &amp; Stats button's rectangle, in absolute coordinates.</summary>
     bool StatsRect(out FVector2D topLeft, out FVector2D bottomRight)
     {
+        if (statsButton != null) return Screens.Rect(statsButton, out topLeft, out bottomRight);
         topLeft = Vec2(0, 0);
         bottomRight = Vec2(0, 0);
-        if (statsButton == null) return false;
-        var geometry = statsButton.GetCachedGeometry();
-        var size = USlateBlueprintLibrary.GetLocalSize(geometry);
-        if (!(size.X > 1) || !(size.Y > 1)) return false;
-        topLeft = USlateBlueprintLibrary.LocalToAbsolute(geometry, Vec2(0, 0));
-        bottomRight = USlateBlueprintLibrary.LocalToAbsolute(geometry, size);
-        return bottomRight.X - topLeft.X > 1;
+        return false;
     }
 
     /// <summary>
     /// The inventory page's scale: absolute pixels per unit of its design (it's laid out at 4K sizes and scaled to fit),
     /// measured on Effects &amp; Stats.
     /// </summary>
-    public double PageScale()
-    {
-        if (statsButton == null) return 0;
-        var geometry = statsButton.GetCachedGeometry();
-        var size = USlateBlueprintLibrary.GetLocalSize(geometry);
-        if (!(size.X > 1)) return 0;
-        var a = USlateBlueprintLibrary.LocalToAbsolute(geometry, Vec2(0, 0));
-        var b = USlateBlueprintLibrary.LocalToAbsolute(geometry, Vec2(size.X, 0));
-        return (b.X - a.X) / size.X;
-    }
+    public double PageScale() => statsButton != null ? Screens.Scale(statsButton) : 0;
 
     /// <summary>
     /// The right edge of the page's right-hand column: the item panel under Effects &amp; Stats (looked for twice a second),
@@ -683,7 +524,7 @@ public class ModActor : AActor, IModSettings
         double best = 0;
         foreach (var tip in tips)
         {
-            if (tip == null || page == null || ShownTrace(tip, page) != "yes") continue;
+            if (tip == null || page == null || Screens.ShownTrace(tip, page) != "yes") continue;
             var geometry = tip.GetCachedGeometry();
             var size = USlateBlueprintLibrary.GetLocalSize(geometry);
             if (!(size.X > 1) || !(size.Y > 1)) continue;
@@ -705,14 +546,10 @@ public class ModActor : AActor, IModSettings
         var classic = page as UAS_PlayerInventory;
         var revamp = page as UAS_PlayerInventoryRevamp;
         UWidget? effects = classic != null ? classic.TotalEffectsPanel : revamp != null ? revamp.TotalEffectsPanel : null;
-        return effects != null && page != null && ShownTrace(effects, page) == "yes";
+        return effects != null && page != null && Screens.ShownTrace(effects, page) == "yes";
     }
 
-    public void OnLoadoutsButton()
-    {
-        Sounds.Click(this);
-        OpenDrawer();
-    }
+    void OnLoadoutsButton() => OpenDrawer();
 
     bool DrawerOpen() => drawer != null && UKismetSystemLibrary.IsValid(drawer) && drawer.IsActivated();
 
@@ -729,7 +566,7 @@ public class ModActor : AActor, IModSettings
         Trail.End("open the loadouts drawer");
         drawer = screen as LoadoutDrawer;
         drawer?.Begin(this, StartingLoadout());
-        loadoutsButton?.RemoveFromParent();
+        loadoutsButton?.Hide();
         if (Debug) Log.Write($"loadouts drawer {(drawer != null ? "opened" : "didn't open")} at ({drawerTopLeft.X:0}, {drawerTopLeft.Y:0}) to ({drawerBottomRight.X:0}, {drawerBottomRight.Y:0}){(drawerRectKnown ? "" : " (not measured)")}, page scale {PageScale():0.000}; style: font {(fontObject != null ? "yes" : "no")}, entry box {(entryKnown ? "yes" : "no")}, {rarityNames.Count} rarity frames");
     }
 
@@ -812,39 +649,10 @@ public class ModActor : AActor, IModSettings
         return "";
     }
 
-    /// <summary>A material for the log: its parent, and the values of its parameters.</summary>
-    static string DescribeMaterial(UObject? material)
-    {
-        var instance = material as UMaterialInstance;
-        if (instance == null) return UKismetSystemLibrary.GetObjectName(material);
-        string text = $"{UKismetSystemLibrary.GetObjectName(instance)} (parent {UKismetSystemLibrary.GetObjectName(instance.Parent)})";
-        foreach (var value in instance.VectorParameterValues)
-            text += $" {value.ParameterInfo.Name}=({value.ParameterValue.R:0.00},{value.ParameterValue.G:0.00},{value.ParameterValue.B:0.00},{value.ParameterValue.A:0.00})";
-        foreach (var value in instance.ScalarParameterValues) text += $" {value.ParameterInfo.Name}={value.ParameterValue:0.00}";
-        foreach (var value in instance.TextureParameterValues) text += $" {value.ParameterInfo.Name}={UKismetSystemLibrary.GetObjectName(value.ParameterValue)}";
-        var parent = instance.Parent as UMaterialInstance;
-        if (parent != null)
-        {
-            text += " | parent's:";
-            foreach (var value in parent.VectorParameterValues)
-                text += $" {value.ParameterInfo.Name}=({value.ParameterValue.R:0.00},{value.ParameterValue.G:0.00},{value.ParameterValue.B:0.00},{value.ParameterValue.A:0.00})";
-            foreach (var value in parent.ScalarParameterValues) text += $" {value.ParameterInfo.Name}={value.ParameterValue:0.00}";
-            foreach (var value in parent.TextureParameterValues) text += $" {value.ParameterInfo.Name}={UKismetSystemLibrary.GetObjectName(value.ParameterValue)}";
-        }
-        return text;
-    }
-
     public bool GameFontKnown() => fontObject != null;
 
     /// <summary>The game's font in one of its typefaces ("TenV2", "Sixteen Semibold", "FiveV2"...) at a size of its units.</summary>
-    public FSlateFontInfo GameFont(string typeface, int size)
-    {
-        var font = new FSlateFontInfo();
-        font.FontObject = fontObject;
-        font.TypefaceFontName = typeface;
-        font.Size = size;
-        return font;
-    }
+    public FSlateFontInfo GameFont(string typeface, int size) => GameLook.Font(fontObject, typeface, size);
 
     /// <summary>The item panel's entry box (the box its enchantment sits in).</summary>
     public bool EntryBrush(out FSlateBrush brush)

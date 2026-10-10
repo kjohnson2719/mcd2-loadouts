@@ -16,10 +16,14 @@
     <NeoRuneModDescription>Save the gear you have on as a loadout, and switch between loadouts in one press, enchantments included: the gear you take off is disenchanted (its enchantment points come back) and the gear you put on is enchanted again as it was saved.\nOn the inventory page, the Loadouts button beside Effects &amp; Stats (or right stick click, or L) opens them: equip, save, rename and clear loadouts there.\nA key for "next loadout" can be set below, to switch anywhere.</NeoRuneModDescription>
   </PropertyGroup>
   <!--
-    NeoRune compiles the sources itself, with its own symbols: development builds also get DEBUG (diagnostics on by
-    default, see ModActor), releases (neorune pack builds Release) don't. Added to its arguments after the SDK's.
+    The mod kit (ModKit): shared code for these mods, compiled in. Next to the mod while working on it; in a ModKit folder
+    inside the mod on the build server (GitHub Actions checks it out there). It also gives development builds the DEBUG
+    symbol (diagnostics on), and the mod its version and repository for the update check.
   -->
-  <Target Name="NeoRuneDebugSymbol" AfterTargets="_NeoRunePrepare" BeforeTargets="NeoRuneCompile" Condition="'$(Configuration)' == 'Debug' and '$(_NeoRuneRsp)' != ''">
-    <WriteLinesToFile File="$(_NeoRuneRsp)" Lines="--define=DEBUG" Overwrite="false" Condition="!$([System.IO.File]::ReadAllText('$(_NeoRuneRsp)').Contains('--define=DEBUG'))" />
-  </Target>
+  <PropertyGroup>
+    <ModKitRepo>kjohnson2719/mcd2-loadouts</ModKitRepo>
+    <ModKitDir Condition="'$(ModKitDir)' == '' and Exists('$(MSBuildProjectDirectory)\ModKit\ModKit.targets')">$(MSBuildProjectDirectory)\ModKit\</ModKitDir>
+    <ModKitDir Condition="'$(ModKitDir)' == ''">$(MSBuildProjectDirectory)\..\ModKit\</ModKitDir>
+  </PropertyGroup>
+  <Import Project="$(ModKitDir)ModKit.targets" />
 </Project>

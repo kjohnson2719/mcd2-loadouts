@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1
+
+- Tells you when a new version is out (asks GitHub when the game starts, at most every 6 hours; a setting turns it off).
+- Built on the shared mod kit (ModKit): no change in how it plays.
+
 ## 1.0 (2026-10-09)
 
 First release.

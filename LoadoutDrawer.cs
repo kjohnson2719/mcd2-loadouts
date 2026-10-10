@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using ModKit;
 using NeoRune;
 using UE.Angelscript;
 using UE.CommonUI;
@@ -26,8 +27,6 @@ public class LoadoutDrawer : ModMenu
     const float IconSize = 140;
     const float IconGap = 16;
     const double SlideSeconds = 0.18;
-    const string PanelClass = "/OreUI/UI/Widget/Panel/W_TooltipContentPanel.W_TooltipContentPanel_C";
-    const string RibbonClass = "/OreUI/UI/Widget/Tooltip/Modules/W_TooltipModule_Equipped.W_TooltipModule_Equipped_C";
     // The actions, in the order of the hints in the button bar.
     const int ActionEquip = 0;
     const int ActionSave = 1;
@@ -118,32 +117,15 @@ public class LoadoutDrawer : ModMenu
         // Laid out in the game's own units (its 4K design sizes), scaled like the inventory page.
         scaler = UGameplayStatics.SpawnObject(Unreal.ClassOf<UScaleBox>(), tree) as UScaleBox;
         sizer = UGameplayStatics.SpawnObject(Unreal.ClassOf<USizeBox>(), tree) as USizeBox;
-        var column = Ui.Column(tree);
-        if (scaler == null || sizer == null || column == null) return canvas;
+        if (scaler == null || sizer == null) return canvas;
         scaler.SetStretch(UE.Slate.EStretch.UserSpecified);
         scaler.SetUserSpecifiedScale(0.5f);
         sizer.SetWidthOverride(1500);
         sizer.SetHeightOverride(1700);
-        sizer.AddChild(column);
         scaler.AddChild(sizer);
 
-        // The header ribbon: the game's "Equipped" module, retitled.
-        ribbon = GameWidget(RibbonClass);
-        if (ribbon != null)
-        {
-            ribbonText = GameUI.FindOfClass(ribbon, Unreal.ClassOf<UTextBlock>()) as UTextBlock;
-            ribbonText?.SetText("Loadouts");
-            column.AddChild(ribbon);
-        }
-        else
-        {
-            var title = Label(tree, "Loadouts", "TenV2", 39, Ui.Color(1, 1, 1, 1));
-            var header = Ui.Panel(tree, Centred(tree, title), Ui.Color(0.3f, 0.44f, 0.52f, 1), 16);
-            if (header != null) column.AddChild(header);
-        }
-
-        // The panel: the game's tooltip panel (frame, blur, button bar) with the loadouts in its upper part, the selected
-        // loadout's gear and enchantments in its scrolling lower part, and the actions in its button bar.
+        // The loadouts in the panel's upper part, the selected loadout's gear and enchantments in its scrolling lower part,
+        // and the actions in its button bar.
         var upper = Ui.Column(tree);
         var lower = Ui.Column(tree);
         var actions = Ui.Row(tree);
@@ -160,42 +142,29 @@ public class LoadoutDrawer : ModMenu
         AddAction(tree, actions, ActionSave, "Save");
         AddAction(tree, actions, ActionRename, "Rename");
         AddAction(tree, actions, ActionClear, "Clear");
+        var bar = Ui.Panel(tree, actions, Ui.Color(0, 0, 0, 0), 0);
+        bar?.SetPadding(new FMargin { Left = 40, Right = 40, Top = 24, Bottom = 24 });
+        bar?.SetHorizontalAlignment(EHorizontalAlignment.HAlign_Right);
 
-        var panelWidget = GameWidget(PanelClass);
-        var panel = panelWidget as UAS_SpicewoodTooltipContentPanel;
-        var upperSlot = panelWidget != null ? GameUI.Find(panelWidget, "UpperContent") as UNamedSlot : null;
-        if (panel != null && upperSlot != null && panel.LowerContent != null)
-        {
-            upperSlot.SetContent(upper);
-            panel.LowerContent.SetContent(lower);
-            // Our actions in its button bar, in place of the game's bar (which shows the actions of the game's screens).
-            if (panel.ActionBarBorder != null)
-            {
-                var bar = Ui.Panel(tree, actions, Ui.Color(0, 0, 0, 0), 0);
-                bar?.SetPadding(new FMargin { Left = 40, Right = 40, Top = 24, Bottom = 24 });
-                bar?.SetHorizontalAlignment(EHorizontalAlignment.HAlign_Right);
-                panel.ActionBarBorder.SetContent(bar);
-                panel.IsActionBarVisible = true;
-                panel.ActionBarBorder.SetVisibility(ESlateVisibility.Visible);
-            }
-            var panelSlot = column.AddChild(panelWidget) as UVerticalBoxSlot;
-            panelSlot?.SetSize(new FSlateChildSize { Value = 1, SizeRule = ESlateSizeRule.Fill });
-        }
+        // The game's item panel (the kit's GamePanel): its ribbon, retitled, over its tooltip panel.
+        var panel = upper != null && lower != null ? GamePanel.Build(this, tree, "Loadouts", upper, lower, bar, out ribbonText, out ribbon) : null;
+        if (panel != null) sizer.AddChild(panel);
         else
         {
-            // Without the game's panel: a plain one.
+            // Without the game's panel (a game update): a plain one.
             var plain = Ui.Column(tree);
             if (plain != null)
             {
+                var title = Label(tree, "Loadouts", GameLook.TitleFace, 39, Ui.Color(1, 1, 1, 1));
+                var header = Ui.Panel(tree, Centred(tree, title), Ui.Color(0.3f, 0.44f, 0.52f, 1), 16);
+                if (header != null) plain.AddChild(header);
                 plain.AddChild(upper);
                 var lowerSlot = plain.AddChild(lower) as UVerticalBoxSlot;
                 lowerSlot?.SetSize(new FSlateChildSize { Value = 1, SizeRule = ESlateSizeRule.Fill });
-                var actionsSlot = plain.AddChild(actions) as UVerticalBoxSlot;
-                actionsSlot?.SetHorizontalAlignment(EHorizontalAlignment.HAlign_Right);
+                if (bar != null) plain.AddChild(bar);
             }
             var box = Ui.Panel(tree, plain, Ui.Color(0.045f, 0.075f, 0.1f, 0.97f), 80);
-            var boxSlot = box != null ? column.AddChild(box) as UVerticalBoxSlot : null;
-            boxSlot?.SetSize(new FSlateChildSize { Value = 1, SizeRule = ESlateSizeRule.Fill });
+            if (box != null) sizer.AddChild(box);
         }
 
         drawer = scaler;
@@ -235,7 +204,7 @@ public class LoadoutDrawer : ModMenu
                 slot?.SetPadding(new FMargin { Top = 24 });
             }
         }
-        status = Label(tree, "", "Sixteen Semibold", 36, Ui.Color(0.84f, 0.87f, 0.95f, 1));
+        status = Label(tree, "", GameLook.TextFace, 36, Ui.Color(0.84f, 0.87f, 0.95f, 1));
         if (status != null)
         {
             status.SetAutoWrapText(true);
@@ -247,7 +216,7 @@ public class LoadoutDrawer : ModMenu
     /// <summary>A section's header, like the game's ("Effects" in the item panel).</summary>
     void AddHeader(UWidgetTree tree, UVerticalBox box, string text)
     {
-        var header = Label(tree, text, "Sixteen Semibold", 45, Ui.Color(0.57f, 0.59f, 0.65f, 1));
+        var header = Label(tree, text, GameLook.TextFace, 45, Ui.Color(0.57f, 0.59f, 0.65f, 1));
         if (header == null) return;
         var slot = box.AddChild(header) as UVerticalBoxSlot;
         slot?.SetPadding(new FMargin { Top = 20, Bottom = 16 });
@@ -257,8 +226,8 @@ public class LoadoutDrawer : ModMenu
     UButton? Row(UWidgetTree tree, int index)
     {
         var button = UGameplayStatics.SpawnObject(Unreal.ClassOf<UButton>(), tree) as UButton;
-        var name = Label(tree, $"Loadout {index + 1}", "TenV2", 45, Ui.Color(1, 1, 1, 1));
-        var state = Label(tree, "", "FiveV2", 29, Ui.Color(0.57f, 0.59f, 0.65f, 1));
+        var name = Label(tree, $"Loadout {index + 1}", GameLook.TitleFace, 45, Ui.Color(1, 1, 1, 1));
+        var state = Label(tree, "", GameLook.TagFace, 29, Ui.Color(0.57f, 0.59f, 0.65f, 1));
         var line = Ui.Row(tree);
         if (button == null || name == null || state == null || line == null) return null;
         var nameSlot = line.AddChild(name) as UHorizontalBoxSlot;
@@ -352,10 +321,10 @@ public class LoadoutDrawer : ModMenu
     {
         var button = UGameplayStatics.SpawnObject(Unreal.ClassOf<UButton>(), tree) as UButton;
         var line = Ui.Row(tree);
-        var text = Label(tree, label, "Sixteen Bold", 32, Ui.Color(1, 1, 1, 1));
+        var text = Label(tree, label, GameLook.ButtonFace, 32, Ui.Color(1, 1, 1, 1));
         var icon = UGameplayStatics.SpawnObject(Unreal.ClassOf<UCommonActionWidget>(), tree) as UCommonActionWidget;
         var iconBox = UGameplayStatics.SpawnObject(Unreal.ClassOf<USizeBox>(), tree) as USizeBox;
-        var keyName = Label(tree, "", "Sixteen Bold", 28, Ui.Color(1, 1, 1, 1));
+        var keyName = Label(tree, "", GameLook.ButtonFace, 28, Ui.Color(1, 1, 1, 1));
         var keyCap = Ui.Panel(tree, keyName, Ui.Color(0.02f, 0.03f, 0.04f, 0.9f), 4);
         if (button == null || line == null || text == null || icon == null || iconBox == null || keyName == null || keyCap == null) return;
         var textSlot = line.AddChild(text) as UHorizontalBoxSlot;
@@ -386,17 +355,6 @@ public class LoadoutDrawer : ModMenu
         actionKeyCaps.Add(keyCap);
         actionKeyNames.Add(keyName);
         shownRows.Add("");
-    }
-
-    /// <summary>A game widget by class path, made for this screen's player (null when the class isn't there).</summary>
-    UUserWidget? GameWidget(string path)
-    {
-        var widgetClass = Unreal.LoadClass<UUserWidget>(path);
-        if (widgetClass == null) return null;
-        Trail.Begin("LoadoutDrawer: game widget " + path);
-        var widget = UWidgetBlueprintLibrary.Create(this, widgetClass, World.PlayerController(this));
-        Trail.End("LoadoutDrawer: game widget " + path);
-        return widget;
     }
 
     /// <summary>Text, remembered with its typeface and size so it can take the game's font (<see cref="ApplyStyle"/>).</summary>
@@ -441,7 +399,7 @@ public class LoadoutDrawer : ModMenu
             texts[i].SetShadowOffset(Vec2(0, 4));
             texts[i].SetShadowColorAndOpacity(Ui.Color(0, 0, 0, 0.5f));
         }
-        renameText?.SetFont(mod.GameFont("Sixteen Semibold", 45));
+        renameText?.SetFont(mod.GameFont(GameLook.TextFace, 45));
         if (mod.EntryBrush(out FSlateBrush entry))
         {
             for (int i = 0; i < rows.Count; i++) rows[i].SetStyle(RowStyle(entry));
@@ -513,11 +471,7 @@ public class LoadoutDrawer : ModMenu
         ApplyStyle();
         Place(now);
         // The game's ribbon can put its own words back (it's one of its tooltip's modules): keep ours.
-        if (ribbon != null)
-        {
-            if (!ribbon.IsVisible()) ribbon.SetVisibility(ESlateVisibility.HitTestInvisible);
-            ribbonText?.SetText("Loadouts");
-        }
+        GamePanel.KeepTitle(ribbon, ribbonText, "Loadouts");
         int count = mod.Count;
         if (selected >= count) selected = count - 1;
         if (selected < 0) selected = 0;
@@ -625,7 +579,7 @@ public class LoadoutDrawer : ModMenu
                 : Ui.Text(WidgetTree, "Empty. Save puts the gear you have on into this loadout.", 36);
             if (none != null)
             {
-                none.SetFont(mod.GameFont(mod.HasLoadout(selected) ? "FiveV2" : "Sixteen Semibold", mod.HasLoadout(selected) ? 29 : 36));
+                none.SetFont(mod.GameFont(mod.HasLoadout(selected) ? GameLook.TagFace : GameLook.TextFace, mod.HasLoadout(selected) ? 29 : 36));
                 none.SetColorAndOpacity(Ui.SlateColor(Ui.Color(0.57f, 0.59f, 0.65f, 1)));
                 none.SetAutoWrapText(true);
                 enchantList.AddChild(none);
@@ -641,11 +595,11 @@ public class LoadoutDrawer : ModMenu
         var title = Ui.Text(WidgetTree, $"{item.EnchantName} {Tier(item.EnchantSpecific)}", 40);
         var on = Ui.Text(WidgetTree, item.Name, 32);
         if (column == null || title == null || on == null) return null;
-        title.SetFont(mod.GameFont("Sixteen Semibold", 40));
+        title.SetFont(mod.GameFont(GameLook.TextFace, 40));
         title.SetColorAndOpacity(Ui.SlateColor(Ui.Color(0.8f, 0.82f, 0.91f, 1)));
         title.SetShadowOffset(Vec2(5, 5));
         title.SetShadowColorAndOpacity(Ui.Color(0, 0, 0, 0.5f));
-        on.SetFont(mod.GameFont("Sixteen Semibold", 32));
+        on.SetFont(mod.GameFont(GameLook.TextFace, 32));
         on.SetColorAndOpacity(Ui.SlateColor(Ui.Color(0.57f, 0.59f, 0.64f, 1)));
         var titleSlot = column.AddChild(title) as UHorizontalBoxSlot;
         titleSlot?.SetVerticalAlignment(EVerticalAlignment.VAlign_Center);
